@@ -18,11 +18,13 @@ namespace MusicPlayerV2.Controllers
     {
         private readonly IOptions<PlayerSettings> settings;
         private readonly LastFMManager lastFmManager;
+        private readonly ListenBrainzManager listenbrainzManager;
 
-        public PlayerController(IOptions<PlayerSettings> settings, LastFMManager lastFmManager)
+        public PlayerController(IOptions<PlayerSettings> settings, LastFMManager lastFmManager, ListenBrainzManager listenbrainzManager)
         {
             this.settings = settings;
             this.lastFmManager = lastFmManager;
+            this.listenbrainzManager = listenbrainzManager;
         }
 
         [HttpGet("GetCurrentPlayerState")]
@@ -42,15 +44,29 @@ namespace MusicPlayerV2.Controllers
 
 
         [HttpGet("GetCurrentTrackId")]
-        public GetCurrentTrackIdResult GetCurrentTrackId()
+        public GetCurrentTrackIdResult GetCurrentTrackId(string oldTrackId = null)
         {
             try
             {
+                var currentTrackId = Player.Instance.CurrentPlaylist.CurrentTrack == null ? "" : Player.Instance.CurrentPlaylist.CurrentTrack.Id + "";
+
+                var hasChanged = oldTrackId + "" != currentTrackId;
+
+                // long polling, don't respond to the request until the track has changed or timeout is reached
+                DateTime cur = DateTime.UtcNow;
+                while (!hasChanged && DateTime.UtcNow < cur.AddSeconds(30))
+                {
+                    System.Threading.Thread.Sleep(100);
+                    currentTrackId = Player.Instance.CurrentPlaylist.CurrentTrack == null ? "" : Player.Instance.CurrentPlaylist.CurrentTrack.Id + "";
+                    hasChanged = oldTrackId + "" != currentTrackId;
+                }
+
                 return new GetCurrentTrackIdResult()
                 {
                     Success = true,
-                    TrackId = Player.Instance.CurrentPlaylist.CurrentTrack == null ? "" : Player.Instance.CurrentPlaylist.CurrentTrack.Id + ""
+                    TrackId = currentTrackId
                 };
+
             }
             catch (Exception ex)
             {
@@ -121,8 +137,12 @@ namespace MusicPlayerV2.Controllers
                     mgr.Set(scrobble);
                     // and notify last fm if played to end
                     if (wasPlayedToEnd)
-                        lastFmManager.ScrobbleToLastFM(Player.Instance.CurrentPlaylist.CurrentTrackStartedPlayingOn, track);
+                    {
 
+                        var startedPlaying = DateTime.UtcNow.Subtract(TimeSpan.FromSeconds(track.Duration)); // Player.Instance.CurrentPlaylist.CurrentTrackStartedPlayingOn
+                        lastFmManager.ScrobbleToLastFM(startedPlaying, track);
+                        listenbrainzManager.Scrobble(startedPlaying, track);
+                    }
                     mgr.Set(track);
                 }
             }
@@ -230,6 +250,8 @@ namespace MusicPlayerV2.Controllers
                         }
 
                         lastFmManager.UpdateNowPlayingToLastFM(track);
+                        listenbrainzManager.UpdateNowPlayingToListenBrainz(track);
+
                     }
                     else
                     {
@@ -460,38 +482,19 @@ namespace MusicPlayerV2.Controllers
 
             FileInfo fi = new FileInfo(filePath);
 
-            if (fi.LastWriteTime <= GetIfModifiedSince())
-            {
-                Response.StatusCode = 304;
-                Response.ContentType = "audio/mpeg";
-                return Content(String.Empty);
-            }
-
-            FileStream stream = System.IO.File.OpenRead(filePath);
-            //var response =  HttpResponse.GetOKResponse(req, "audio/mpeg", stream);
-
-            //HttpResponse response;
-            if ((Request.Headers["User-Agent"] + "").Contains("Chrome"))
-            {
-                //if (Request.Headers.ContainsKey("Range"))
-                //    response = PartialHttpResponse.GetPartialResponse(req, "audio/mpeg", stream);
-                // TODO ?
-                Response.Headers["Accept-Ranges"] = "bytes";
-            }
+            if (!fi.Exists)
+                return NotFound();
 
             Response.Headers["X-Content-Duration"] = track.Duration.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-            return new FileStreamResult(stream, "audio/mpeg");
-        }
+            DateTimeOffset lastModified = new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero);
+            var entityTag = new Microsoft.Net.Http.Headers.EntityTagHeaderValue(
+                '"' + fi.LastWriteTimeUtc.Ticks.ToString("x") + "-" + fi.Length.ToString("x") + '"');
 
-        private DateTime GetIfModifiedSince()
-        {
-            string str = Request.Headers["If-Modified-Since"] + "";
-            DateTime d;
-            if (DateTime.TryParse(str, out d))
-                return d;
-            else
-                return DateTime.MinValue;
+            // PhysicalFile with enableRangeProcessing handles Range/If-Range/If-Modified-Since,
+            // 206 Partial Content, Content-Range and Accept-Ranges headers for us, which Safari/WebKit
+            // requires in order to seek within the audio stream instead of always getting a full 200 response.
+            return PhysicalFile(filePath, "audio/mpeg", lastModified, entityTag, enableRangeProcessing: true);
         }
 
         private T GetPlayerStateResultFromPlayer<T>()
