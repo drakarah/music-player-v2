@@ -412,6 +412,7 @@ class PiMusicPlayerTray:
         self.window.set_skip_taskbar_hint(True)
         self.window.set_skip_pager_hint(True)
         self.window.connect("delete-event", self._on_window_close)
+        self.window.connect("key-press-event", self._on_window_key_press)
         self.webview = WebKit2.WebView()
         self.webview.connect("load-changed", self._on_load_changed)
         self.webview.load_uri(self.player_url)
@@ -726,6 +727,13 @@ class PiMusicPlayerTray:
             else:
                 self.window.set_opacity(opacity)
         return True
+
+    def _on_window_key_press(self, _widget, event):
+        # The popup takes focus while the Show hotkey (e.g. ctrl+alt+a) may
+        # still be held, and WebKit would treat that as ctrl+a (select all).
+        # Ctrl+Alt combos are reserved for the global hotkeys, so swallow them.
+        mods = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK
+        return (event.state & mods) == mods
 
     def _on_window_close(self, *_args):
         # Clicking the window close button just hides it, like minimizing to
