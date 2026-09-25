@@ -50,11 +50,18 @@ flatpak run org.drakarah.PiMusicPlayerTray
 
 ## Permissions (finish-args)
 
-- `--socket=wayland` / `--socket=fallback-x11` / `--socket=x11`: needed to
-  show the popup window, and for `pynput` to register global hotkeys (which
-  requires direct X11/XWayland access).
+- `--socket=wayland` / `--socket=x11`: needed to show the popup window.
+  The app prefers X11 (XWayland on Wayland sessions), since Wayland doesn't
+  let apps place their own windows and the popup would be centered instead
+  of in the corner; `pynput`'s hotkey fallback also needs X11.
+  `--socket=fallback-x11` is deliberately not used: on Wayland it hides the
+  X11 socket.
+- `--socket=pulseaudio`: audio output for playback; without it the player
+  reports that the media could not be loaded.
 - `--share=network`: the popup loads the MusicPlayerV2 web page, normally
   served from `localhost`.
+- `--filesystem=xdg-config/pimusicplayertray:ro`: read the user's
+  `~/.config/pimusicplayertray/config.ini`.
 - `--talk-name=org.kde.StatusNotifierWatcher` / `--own-name=org.kde.StatusNotifierItem-*`:
   required for the AppIndicator-based tray icon to register itself.
 
@@ -62,10 +69,13 @@ flatpak run org.drakarah.PiMusicPlayerTray
 
 The app ships `config.ini` with the same defaults as the Windows version.
 Users can override any setting (e.g. `PlayerUrl` or a hotkey) by creating
-`~/.config/pimusicplayertray/config.ini` — inside the Flatpak sandbox this
-resolves to `~/.var/app/org.drakarah.PiMusicPlayerTray/config/pimusicplayertray/config.ini`
-automatically, no extra permissions required. Only the keys you want to
-change need to be present; anything else falls back to the bundled default.
+`~/.config/pimusicplayertray/config.ini`. The manifest grants read-only
+access to that directory (`--filesystem=xdg-config/pimusicplayertray:ro`),
+since the sandbox otherwise only sees its private
+`~/.var/app/org.drakarah.PiMusicPlayerTray/config/`. A config.ini placed in
+that private directory is also read and takes precedence. Only the keys you
+want to change need to be present; anything else falls back to the bundled
+default.
 
 ## Updating pinned pip sources
 

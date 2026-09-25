@@ -13,6 +13,12 @@ import configparser
 import os
 import sys
 
+# Wayland compositors (e.g. GNOME) ignore a client's request to position its
+# own window, so the popup would end up centered instead of in the corner.
+# Prefer X11 (XWayland on Wayland sessions) so window.move() works; this must
+# be set before GTK is initialized. Set GDK_BACKEND yourself to override.
+os.environ.setdefault("GDK_BACKEND", "x11,wayland")
+
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -97,9 +103,17 @@ def _default_config_path():
     return local
 
 
-def _user_config_path():
-    """Per-user, writable config.ini used to override the bundled defaults."""
-    return os.path.join(GLib.get_user_config_dir(), "pimusicplayertray", "config.ini")
+def _user_config_paths():
+    """Per-user config.ini files used to override the bundled defaults.
+
+    Inside the Flatpak sandbox GLib's user config dir points to
+    ~/.var/app/<app-id>/config, so the host's ~/.config/pimusicplayertray
+    (exposed read-only via the manifest's --filesystem permission) is read
+    as well. Later paths take precedence over earlier ones.
+    """
+    host = os.path.join(os.path.expanduser("~"), ".config", "pimusicplayertray", "config.ini")
+    user = os.path.join(GLib.get_user_config_dir(), "pimusicplayertray", "config.ini")
+    return [host] if host == user else [host, user]
 
 
 def load_config():
@@ -107,7 +121,7 @@ def load_config():
     # Values from the user config (if present) take precedence over the
     # bundled defaults, so users only need to set the keys they want to
     # change (e.g. just PlayerUrl or a single hotkey).
-    parser.read([_default_config_path(), _user_config_path()])
+    parser.read([_default_config_path()] + _user_config_paths())
     general = parser["General"] if parser.has_section("General") else {}
     hotkeys = parser["Hotkeys"] if parser.has_section("Hotkeys") else {}
     return general, hotkeys
@@ -232,11 +246,17 @@ class PortalGlobalShortcuts:
                     options["preferred_trigger"] = GLib.Variant("s", preferred_trigger)
                 shortcut_specs.append((shortcut_id, options))
 
-            self._call_portal(
+            bind_results = self._call_portal(
                 "BindShortcuts",
                 "(oa(sa{sv})sa{sv})",
                 (self._session_handle, shortcut_specs, "", {}),
             )
+            # What each shortcut is actually bound to, which may differ
+            # from preferred_trigger (see _register_hotkeys_via_portal).
+            self.bound_triggers = {
+                shortcut_id: options.get("trigger_description", "")
+                for shortcut_id, options in bind_results.get("shortcuts", [])
+            }
         except Exception:
             self.stop()
             raise
@@ -387,6 +407,7 @@ class PiMusicPlayerTray:
     def _build_window(self):
         self.window = Gtk.Window(title="PiMusicPlayerTray")
         self.window.set_default_size(self.form_width, self.form_height)
+        self.window.set_decorated(False)
         self.window.set_keep_above(True)
         self.window.set_skip_taskbar_hint(True)
         self.window.set_skip_pager_hint(True)
@@ -499,6 +520,15 @@ class PiMusicPlayerTray:
             return False
 
         print("Global hotkeys registered via the desktop portal.", file=sys.stderr)
+        # The desktop only honors the requested trigger the first time a
+        # shortcut is bound; after that it keeps the user's own choice.
+        for name, _description, trigger in shortcuts:
+            bound = self.hotkey_listener.bound_triggers.get(name, "")
+            print(
+                "  %s: bound to %s (config.ini: %s)"
+                % (name, bound or "nothing", trigger),
+                file=sys.stderr,
+            )
         return True
 
     def _register_hotkeys_via_pynput(self, entries):
@@ -646,10 +676,16 @@ class PiMusicPlayerTray:
     def show_form(self, auto_hide):
         self.do_not_auto_hide = auto_hide
 
-        screen = Gdk.Screen.get_default()
-        if screen is not None:
-            x = max(0, screen.get_width() - self.form_width)
-            y = max(0, screen.get_height() - self.form_height)
+        # Bottom-right corner of the primary monitor's work area, so the
+        # popup stays clear of panels and docks.
+        display = Gdk.Display.get_default()
+        monitor = None
+        if display is not None:
+            monitor = display.get_primary_monitor() or display.get_monitor(0)
+        if monitor is not None:
+            area = monitor.get_workarea()
+            x = max(area.x, area.x + area.width - self.form_width)
+            y = max(area.y, area.y + area.height - self.form_height)
             self.window.move(x, y)
 
         self.window.resize(self.form_width, self.form_height)

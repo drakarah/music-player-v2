@@ -5,17 +5,21 @@ sdk: org.gnome.Sdk
 command: pimusicplayertray
 
 finish-args:
-  # Show the popup window and let WebKitGTK render it.
+  # Show the popup window and let WebKitGTK render it. The app prefers X11
+  # (XWayland on Wayland sessions) so it can place the popup in the screen
+  # corner, and pynput's hotkey fallback needs X11 too. Don't add
+  # --socket=fallback-x11: on Wayland it takes precedence and hides X11.
   - --socket=wayland
-  - --socket=fallback-x11
-  # pynput's Linux backend talks to the X server directly to register
-  # global hotkeys; this only works when an X11 (or XWayland) socket is
-  # available, so also request the plain x11 socket in addition to the
-  # Wayland/fallback-x11 ones above.
   - --socket=x11
   - --share=ipc
+  # Audio output for the player's <audio> playback (WebKit/GStreamer uses
+  # PulseAudio, which PipeWire also provides).
+  - --socket=pulseaudio
   # The player web page is normally served from localhost by MusicPlayerV2.
   - --share=network
+  # Read the user's config from the host's ~/.config/pimusicplayertray
+  # (the sandbox otherwise only sees ~/.var/app/<app-id>/config).
+  - --filesystem=xdg-config/pimusicplayertray:ro
   # AppIndicator registers itself as a StatusNotifierItem on the session bus.
   # Flatpak's finish-args validation rejects wildcarded D-Bus names, so we
   # grant the concrete names the app will use: inside its own sandboxed pid
