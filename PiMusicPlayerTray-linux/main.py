@@ -690,6 +690,9 @@ class PiMusicPlayerTray:
             self.window.move(x, y)
 
         self.window.resize(self.form_width, self.form_height)
+        # Auto popups (track change, Show hotkey) shouldn't steal focus from
+        # whatever the user is doing; clicking the popup still focuses it.
+        self.window.set_focus_on_map(auto_hide)
         self.window.set_opacity(0)
         self.window.show_all()
 
